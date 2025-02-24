@@ -1,0 +1,243 @@
+---
+title: "scRNA-seq analysis"
+author: "Hsiao-Yu Peng"
+date: 'Compiled: `r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document: default
+  html_document:
+    df_print: kable
+---
+
+The dataset has been downloaded from [GSE276251] (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE276251). 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#install.packages('Seurat')
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+
+# load control and high-glucose data set
+ctl.data <- Read10X(data.dir = "GSE276251_RAW/control/")
+glucose.data <- Read10X(data.dir = "GSE276251_RAW/glucose/")
+
+# Initialize the Seurat object with the raw (non-normalized data).
+ctrl <- CreateSeuratObject(counts = ctl.data, project= 'ctrl'
+                         , min.cells = 3, min.features = 200)
+glucose <- CreateSeuratObject(counts = glucose.data, project = 'glucose',
+                         , min.cells = 3, min.features = 200)
+
+ctrl
+glucose
+
+```
+
+
+```{r}
+# Explore the metadata
+head(ctrl@meta.data)
+head(glucose@meta.data)
+```
+
+- `orig.ident`: this often contains the sample identity if known, but will default to “SeuratProject”
+- `nCount_RNA`: number of UMIs per cell
+- `nFeature_RNA`: number of genes detected per cell
+
+
+## 1. Filter out low-quality cells
+
+- Low-quality cells or empty droplets often have very few genes (low nFeature_RNA and nCount_RNA)
+- Cell doublets or multiplets have high values of nFeature_RNA & nCount_RNA
+- Low-quality/dying cells often have high percentage of mitochondrial genes (percent.mt)
+
+**Percentage of mitochondrial genes**
+
+Seurat's `PercentageFeatureSet()` function calculates the proportion of transcripts mapping to mitochondrial genes. For each cell, it sums the counts across all genes (features) belonging to the mitochondrial set, which is identified by the "MT-" or "mt-" prefix.
+
+NOTE: The pattern "^MT-" is used for human gene names, while "^mt-" is used for non-human gene names.
+
+```{r}
+# Extract percentage of mitochondrial genes 
+ctrl$percent.mt <- PercentageFeatureSet(object = ctrl, pattern = "^mt-")
+glucose$percent.mt <- PercentageFeatureSet(object = glucose, pattern = "^mt-")
+```
+
+### Selecting cells for further analysis
+
+**QC Metrics: "nFeature_RNA", "nCount_RNA", "percent.mt" **
+
+**1. nFeature_RNA (Number of genes detected per cell)**
+- **Threshold considerations:**
+  - **Lower threshold:** Cell with `nFeature_RNA < 200` are often considered low quality, as those typically are dying cells or empty droplets.
+  - **Upper threshold:** Cells with unusually high numbers of detected genes may indicate doublets or multiplets, which confounding the clustering and can form small clusters that are confusing to interpret. 
+
+**2. nCount_RNA (Total number of RNA detected per cell)**
+- **Threshold considerations:**
+  - **Lower threshold:** Cells with very few counts may have failed during library preparation or sequencing, or they may be dying cells.
+  - **Upper threshold:** Cells with very high RNA counts could be doublets or multiplets.
+
+**3. Percentage of mitochondrial gene expression:**
+- **Threshold considerations:** A high percentage of mitochondrial gene expression can indicate stressed or dying cells. Typically, a threshold of 5–10% mitochondrial gene expression is used to filter out cells.
+
+These thresholds are guidelines and can vary depending on the nature of the experiment, tissue type, and data quality. We need to tweak these values after visual inspection of the plots. 
+
+From the plot, it seems that the percentage of mitochondrial genes is higher in some cells. In this case, the percentage of mitochondrial gene in control samples falls on about 20%, which may indicate the quality of this experiment is not very good.
+
+We follow Wang's paper to filter the cells by these two criteria: 
+1. Selecting single cells with the number of expressed genes ranging between 500 and 3000.
+2. Requiring the percentage of sequencing reads on mitochondrial genome to be less than 5 %.
+
+```{r}
+# Filter out cells
+ctrl <- subset(ctrl, subset = nFeature_RNA > 500 & nFeature_RNA < 3000 & percent.mt < 5)
+glucose <- subset(glucose, subset = nFeature_RNA > 500 & nFeature_RNA < 3000 & percent.mt < 5)
+```
+ 
+##2. SCT Transform
+
+### Why use SCTransform?
+
+SCTransform (SCT) is a robust normalization method for scRNA-seq data that improves variance stabilization and removes technical noise. Unlike traditional methods, SCT uses a **regularized negative binomial model**, allowing for better handling of sequencing depth differences and batch effects. It also simplifies preprocessing by combining normalization, variance stabilization, and feature selection into a single step.
+
+#### Key benefits:
+- **Corrects for sequencing depth variations** more effectively.
+- **Reduces technical noise** and overdispersion.
+- **Better handles batch effects**, making dataset integration easier.
+- **Streamlined workflow**, eliminating the need for `FindVariableFeatures()` and `ScaleData()`.
+
+### Why not use LogNormalize?
+
+LogNormalize applies a global scaling factor followed by a log transformation. While simple and computationally efficient, it has **limitations** in handling complex datasets with batch effects or high technical noise.
+
+#### Limitations:
+- **Assumes uniform scaling**, which may not capture gene-specific variance.
+- **Retains sequencing biases**, leading to potential artifacts.
+- **Less effective for dataset integration**, especially when conditions differ (e.g., Control vs. Glucose).
+
+#### When to use each method?
+- Use **LogNormalize** for small, simple datasets without batch effects.
+- Use **SCTransform** for complex datasets requiring better variance correction and integration.
+
+SCT is now the preferred method for scRNA-seq normalization, offering more accurate and reliable results. 
+ 
+```{r}
+# SCTransform normalization
+ctrl <- SCTransform(ctrl, verbose = FALSE)
+glucose <- SCTransform(glucose, verbose = FALSE)
+```
+
+
+
+## 3. Integrate the contrl and high glucose-treated datasets
+
+Data integration in single-cell RNA-seq analysis is performed to reduce **batch effects** and ensure that cells from different conditions, samples, or experiments can be compared on the same scale.
+
+*Anchor-based integration*: Anchors between datasets are identified to integrate them based on shared biological variation.
+
+```{r}
+seurat.list <- list("Control"= ctrl, "Glucose"=glucose)
+features <- SelectIntegrationFeatures(object.list = seurat.list, nfeatures = 3000)
+seurat.list <- PrepSCTIntegration(object.list = seurat.list, anchor.features = features)
+
+# Find anchors and integrate data
+anchors <- FindIntegrationAnchors(object.list = seurat.list, normalization.method = "SCT", anchor.features = features)
+combined_seurat <- IntegrateData(anchorset = anchors, normalization.method = "SCT")
+DefaultAssay(combined_seurat) <- "integrated"
+```
+
+
+## 4. Dimension Reduction and Cell Clustering
+
+### PCA
+
+**PCA (Principal Component Analysis)** is performed after the pre-processing workflow in scRNA-seq analysis to reduce dimensionality and identify key sources of variability in the dataset. 
+
+### Cluster the cells
+
+- **Low resolution (0.1):** Produces fewer clusters, meaning the algorithm combines more cells into larger groups. These clusters represent broader, coarser cell communities with fewer distinctions.
+- **Higher resolution (0.5):** Results in more clusters, meaning the algorithm splits cells into smaller, more fine-grained clusters. This increases the granularity and helps capture subtle differences between cell types or states.
+
+The Louvain algorithm detects communities (clusters) based on cell similarity, so at different resolutions, it identifies different numbers of clusters.
+
+```{r}
+# dimension reduction & clustering
+combined_seurat <- RunPCA(combined_seurat, verbose = FALSE)
+combined_seurat <- RunUMAP(combined_seurat, dims = 1:30)
+combined_seurat <- RunTSNE(combined_seurat, dims = 1:30)
+combined_seurat <- FindNeighbors(combined_seurat, dims = 1:30)
+combined_seurat <- FindClusters(combined_seurat, resolution = 0.15)
+
+```
+
+### UMAP visualization
+
+```{r}
+# UMAP grouped by condition and clusters
+p1 <- DimPlot(combined_seurat, reduction = "umap", group.by = "orig.ident", label = TRUE) + ggtitle("UMAP by Condition")
+p2 <- DimPlot(combined_seurat, reduction = "umap", group.by = "seurat_clusters", label = TRUE) + ggtitle("UMAP by Clusters")
+p1 + p2
+
+```
+
+
+## 5. Differential Expression Analysis
+
+```{r}
+# DEA
+combined_seurat$condition <- combined_seurat$orig.ident
+Idents(combined_seurat) <- "condition"
+de_markers <- FindMarkers(combined_seurat, ident.1 = "glucose", ident.2 = "ctrl", 
+                          logfc.threshold = 0.25, test.use = "wilcox")
+de_markers <- de_markers %>% arrange(desc(avg_log2FC))
+head(de_markers, n = 10)
+
+```
+
+### DEGs Visualization
+```{r}
+# DEGs visualization
+top_genes <- head(rownames(de_markers), 3) 
+VlnPlot(combined_seurat, features = top_genes, group.by = "condition")
+FeaturePlot(combined_seurat, features = top_genes, split.by = "condition")
+
+```
+
+
+### 6. Annotate Cell Clusters
+```{r}
+marker_genes <- c("esm1", "cxcr4a", "sox2")
+
+# VlnPlot
+VlnPlot(combined_seurat, 
+        features = marker_genes, 
+        group.by = "condition",  
+        split.by = "condition", 
+        )  
+
+# FeaturePlot
+FeaturePlot(combined_seurat, 
+            features = marker_genes, 
+            reduction = "umap", 
+            split.by = "condition"
+            )  
+
+
+
+```
+
+## 7.Find out markers in each cluster
+
+```{r}
+Idents(combined_seurat) <- "seurat_clusters"
+cluster_markers <- FindAllMarkers(combined_seurat, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+#top_markers <- cluster_markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+#top_markers
+
+write.table(cluster_markers, file = "zebrafish_HighGluvsControl_merged_markers.tsv",
+            sep = '\t', quote=FALSE, row.names = FALSE)
+```
+
+
