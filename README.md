@@ -1,8 +1,13 @@
-# Single-Cell-RNAseq
+# Zebrafish Embryo scRNA-seq Analysis
 
-The dataset can be downloaded from the following link: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE276251. It consists of control and high glucose-treated zebrafishes. The tasks are as follows:
+## Overview
+This repository contains an R Markdown (RMD) file designed for single-cell RNA sequencing (scRNA-seq) analysis of zebrafish embryos under control and high-glucose conditions. The primary goal is to investigate the transcriptomic effects of a high-glucose environment on embryonic development, leveraging data from the GEO dataset GSE276251. The analysis is performed using the Seurat v5 package in R, following a standard scRNA-seq workflow with modern enhancements like SCTransform for normalization and integration.
 
-1. Filter out low-quality cells.
-2. Perform clustering analysis on both datasets (no need to annotate cells). 
-3. Integrate the control and high glucose-treated datasets. 
-4. Identify differentially expressed genes (DEGs) between the control and treated zebrafishes for each cell cluster (0, 1, 2, etc.)
+## Analysis Workflow
+1. Data Loading and Preprocessing
+2. Quality Control (QC)
+3. Normalization and Integration
+4. Dimensionality Reduction
+5. Clustering
+6. Differential Expression Analysis
+7. Cell Type Annotation 
