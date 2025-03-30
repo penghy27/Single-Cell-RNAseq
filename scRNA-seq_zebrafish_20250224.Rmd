@@ -206,7 +206,7 @@ FeaturePlot(combined_seurat, features = top_genes, split.by = "condition")
 ```
 
 
-### 6. Annotate Cell Clusters
+## 6. Annotate Cell Clusters
 ```{r}
 marker_genes <- c("esm1", "cxcr4a", "sox2")
 
@@ -238,6 +238,57 @@ cluster_markers <- FindAllMarkers(combined_seurat, only.pos = TRUE, min.pct = 0.
 
 write.table(cluster_markers, file = "zebrafish_HighGluvsControl_merged_markers.tsv",
             sep = '\t', quote=FALSE, row.names = FALSE)
+```
+
+## 8. Pathway Enrichment Analysis
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(c("clusterProfiler", "org.Dr.eg.db"))  
+# org.Dr.eg.db: Zebrafish gene anotation database
+
+library(clusterProfiler)
+library(org.Dr.eg.db)  
+
+```
+
+
+```{r}
+# Extract Differential genes
+de_genes <- de_markers %>% 
+  filter(p_val_adj < 0.05) %>% 
+  rownames_to_column("gene") %>% 
+  arrange(desc(avg_log2FC)) %>% 
+  pull(gene)
+
+# Convert gene symbol into Entrez ID (zebrafish)
+de_entrez <- bitr(de_genes, fromType = "SYMBOL", 
+                  toType = "ENTREZID", OrgDb = org.Dr.eg.db)$ENTREZID
+
+```
+
+```{r}
+# GO enrichment analysis
+go_enrich <- enrichGO(gene = de_entrez,
+                      OrgDb = org.Dr.eg.db,
+                      keyType = "ENTREZID",
+                      ont = "BP", # Biological Process. option: "MF", "CC"...
+                      pAdjustMethod = "BH",
+                      qvalueCutoff = 0.05)
+
+# KEGG analysis
+kegg_enrich <- enrichKEGG(gene = de_entrez,
+                          organism = "dre", # zebrafish code in KEGG: "dre"
+                          pAdjustMethod = "BH",
+                          qvalueCutoff = 0.05)
+
+# Visualization
+dotplot(go_enrich, showCategory = 10) + ggtitle("GO Enrichment for DEGs")
+dotplot(kegg_enrich, showCategory = 10) + ggtitle("KEGG Enrichment for DEGs")
+
+# Save results
+write.table(as.data.frame(go_enrich), file="DEG_GO_enrichment.csv", quote = FALSE, row.names = FALSE)
+write.table(as.data.frame(kegg_enrich), file = "DEG_KEGG_enrichment.tsv", quote = FALSE, row.names = FALSE)
 ```
 
 
