@@ -40,5 +40,5 @@ This repository contains single-cell RNA sequencing (scRNA-seq) analysis of zebr
 5. Clustering
 6. Differential Expression Analysis
 7. Cell Type Annotation 
-
+8. Pathway Enrichment Analysis
 
